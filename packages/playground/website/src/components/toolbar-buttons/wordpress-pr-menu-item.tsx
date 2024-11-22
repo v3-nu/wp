@@ -8,18 +8,18 @@ interface Props {
 	onClose: () => void;
 	disabled?: boolean;
 }
-export function GithubExportMenuItem({ onClose, disabled }: Props) {
+export function WordPressPRMenuItem({ onClose, disabled }: Props) {
 	const dispatch: PlaygroundDispatch = useDispatch();
 	return (
 		<MenuItem
-			aria-label="Export WordPress theme, plugin, or wp-content directory to a GitHub repository as a Pull Request."
+			aria-label="Preview WordPress PR."
 			disabled={disabled}
 			onClick={() => {
-				dispatch(setActiveModal(modalSlugs.GITHUB_EXPORT));
+				dispatch(setActiveModal(modalSlugs.PREVIEW_PR_WP));
 				onClose();
 			}}
 		>
-			Export to GitHub
+			Preview a WordPress PR
 		</MenuItem>
 	);
 }
