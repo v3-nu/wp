@@ -2,12 +2,14 @@
 
 class WP_Markdown_Importer extends WP_Stream_Importer {
 
-	public static function create(
-		$entity_iterator_factory,
-		$options = array()
-	) {
-		$options = static::parse_options( $options );
-		return new WP_Markdown_Importer( $entity_iterator_factory, $options );
+	public static function create_for_markdown_directory( $markdown_directory, $options = array(), $cursor = null ) {
+		return static::create(
+			function ( $cursor = null ) use ( $markdown_directory ) {
+				return WP_Markdown_Importer::create( $markdown_directory, $cursor );
+			},
+			$options,
+			$cursor
+		);
 	}
 
 	protected static function parse_options( $options ) {

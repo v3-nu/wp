@@ -9,7 +9,8 @@ class WP_File_Reader implements WP_Byte_Reader {
 	protected $chunk_size;
 	protected $file_pointer;
 	protected $offset_in_file;
-	protected $output_bytes;
+	protected $output_bytes    = '';
+	protected $last_chunk_size = 0;
 	protected $last_error;
 	protected $state = self::STATE_STREAMING;
 
@@ -18,22 +19,24 @@ class WP_File_Reader implements WP_Byte_Reader {
 		$this->chunk_size = $chunk_size;
 	}
 
-	/**
-	 * Really these are just `tell()` and `seek()` operations, only the state is more
-	 * involved than a simple offset. Hmm.
-	 */
-	public function pause(): array|bool {
-		return array(
-			'offset_in_file' => $this->offset_in_file,
-		);
+	public function tell(): int {
+		// Save the previous offset, not the current one.
+		// This way, after resuming, the next read will yield the same $output_bytes
+		// as we have now.
+		return $this->offset_in_file - $this->last_chunk_size;
 	}
 
-	public function resume( $paused_state ): bool {
-		if ( $this->file_pointer ) {
-			_doing_it_wrong( __METHOD__, 'Cannot resume a file reader that is already initialized.', '1.0.0' );
+	public function seek( $offset_in_file ): bool {
+		if ( ! is_int( $offset_in_file ) ) {
+			_doing_it_wrong( __METHOD__, 'Cannot set a file reader cursor to a non-integer offset.', '1.0.0' );
 			return false;
 		}
-		$this->offset_in_file = $paused_state['offset_in_file'];
+		if ( $this->file_pointer ) {
+			_doing_it_wrong( __METHOD__, 'Cannot set a file reader cursor on a file reader that is already initialized.', '1.0.0' );
+			return false;
+		}
+		$this->offset_in_file  = $offset_in_file;
+		$this->last_chunk_size = 0;
 		return true;
 	}
 
@@ -50,7 +53,8 @@ class WP_File_Reader implements WP_Byte_Reader {
 	}
 
 	public function next_bytes(): bool {
-		$this->output_bytes = '';
+		$this->output_bytes    = '';
+		$this->last_chunk_size = 0;
 		if ( $this->last_error || $this->is_finished() ) {
 			return false;
 		}
@@ -66,7 +70,8 @@ class WP_File_Reader implements WP_Byte_Reader {
 			$this->state = static::STATE_FINISHED;
 			return false;
 		}
-		$this->offset_in_file += strlen( $bytes );
+		$this->last_chunk_size = strlen( $bytes );
+		$this->offset_in_file += $this->last_chunk_size;
 		$this->output_bytes   .= $bytes;
 		return true;
 	}
