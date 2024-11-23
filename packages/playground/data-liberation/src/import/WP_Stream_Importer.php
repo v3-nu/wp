@@ -186,6 +186,15 @@ class WP_Stream_Importer {
 	}
 
 	/**
+	 * Get the current stage.
+	 *
+	 * @return string
+	 */
+	public function get_current_stage() {
+		return $this->stage;
+	}
+
+	/**
 	 * Advance the cursor to the oldest finished download. For example:
 	 *
 	 * * We've started downloading files A, B, C, and D in this order.
@@ -400,7 +409,7 @@ class WP_Stream_Importer {
 
 		$enqueued = $this->downloader->enqueue_if_not_exists( $url, $output_path );
 		if ( $enqueued ) {
-			$resource_id   = $this->downloader->get_last_enqueued_resource_id();
+			$resource_id   = $this->downloader->get_enqueued_resource_id();
 			$entity_cursor = $this->entity_iterator->get_reentrancy_cursor();
 			$this->active_downloads[ $entity_cursor ][ $resource_id ] = true;
 		}

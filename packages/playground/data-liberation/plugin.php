@@ -25,39 +25,23 @@ add_filter('wp_kses_uri_attributes', function() {
     return [];
 });
 
-/**
- * Development debug code to run the import manually.
- * @TODO: Remove this in favor of a CLI command.
- */
 add_action('init', function() {
-    return;
-    $wxr_path = __DIR__ . '/tests/fixtures/wxr-simple.xml';
-    $importer = WP_Stream_Importer::create_for_wxr_file(
-        $wxr_path
-    );
-    while($importer->next_step()) {
-        // ...
+    if ( defined( 'WP_CLI' ) && WP_CLI ) {
+        /**
+         * Import a WXR file.
+         *
+         * <file>
+         * : The WXR file to import.
+         */
+        $command = function ( $args, $assoc_args ) {
+            $file = $args[0];
+            data_liberation_import( $file );
+        };
+
+        // Register the WP-CLI import command.
+		// Example usage: wp data-liberation /path/to/file.xml
+        WP_CLI::add_command( 'data-liberation', $command );
     }
-    return;
-    $importer->next_step();
-    $paused_importer_state = $importer->get_reentrancy_cursor();
-
-    echo "\n\n";
-    echo "moving to importer2\n";
-    echo "\n\n";
-
-    $importer2 = WP_Stream_Importer::create_for_wxr_file(
-        $wxr_path,
-        array(),
-        $paused_importer_state
-    );
-    $importer2->next_step();
-    $importer2->next_step();
-    $importer2->next_step();
-    // $importer2->next_step();
-    // var_dump($importer2);
-
-    die("YAY");
 });
 
 // Register admin menu

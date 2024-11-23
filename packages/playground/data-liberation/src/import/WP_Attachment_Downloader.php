@@ -26,7 +26,7 @@ class WP_Attachment_Downloader {
 	public function enqueue_if_not_exists( $url, $output_path ) {
 		$this->enqueued_resource_id = null;
 
-		$output_path = $this->output_root . '/' . ltrim( $output_path, '/' );
+		$output_path = ltrim( $output_path, '/' );
 		if ( file_exists( $output_path ) ) {
 			// @TODO: Reconsider the return value. The enqueuing operation failed,
 			//        but overall already having a file seems like a success.
@@ -99,13 +99,14 @@ class WP_Attachment_Downloader {
 		if ( ! $this->client->await_next_event() ) {
 			return false;
 		}
-		$event   = $this->client->get_event();
-		$request = $this->client->get_request();
-		// The request object we get from the client may be a redirect.
-		// Let's keep referring to the original request.
-		$original_request_id = $request->original_request()->id;
 
-		while ( true ) {
+		do {
+			$event   = $this->client->get_event();
+			$request = $this->client->get_request();
+			// The request object we get from the client may be a redirect.
+			// Let's keep referring to the original request.
+			$original_request_id = $this->client->get_request()->original_request()->id;
+
 			switch ( $event ) {
 				case Client::EVENT_GOT_HEADERS:
 					if ( ! $request->is_redirected() ) {
@@ -129,7 +130,7 @@ class WP_Attachment_Downloader {
 						fclose( $this->fps[ $original_request_id ] );
 					}
 					if ( isset( $this->output_paths[ $original_request_id ] ) ) {
-						$partial_file = $this->output_root . '/' . $this->output_paths[ $original_request_id ] . '.partial';
+						$partial_file = $this->output_paths[ $original_request_id ] . '.partial';
 						if ( file_exists( $partial_file ) ) {
 							unlink( $partial_file );
 						}
@@ -162,7 +163,7 @@ class WP_Attachment_Downloader {
 					}
 					break;
 			}
-		}
+		} while ( $this->client->await_next_event() );
 
 		return true;
 	}
