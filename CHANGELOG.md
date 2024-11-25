@@ -4,6 +4,48 @@ All notable changes to this project are documented in this file by a CI job
 that runs on every NPM release. The file follows the [Keep a Changelog](https://keepachangelog.com/en/1.1.0/)
 format.
 
+## [v1.0.13] (2024-11-25) 
+
+### Enhancements
+
+- E2E: Disable a flaky deployment test. ([#2016](https://github.com/WordPress/wordpress-playground/pull/2016))
+- [Data Liberation] Add WXR import CLI script. ([#2012](https://github.com/WordPress/wordpress-playground/pull/2012))
+- [Data Liberation] Re-entrant WP_Stream_Importer. ([#2004](https://github.com/WordPress/wordpress-playground/pull/2004))
+- [Data Liberation] wp-admin importer page. ([#2003](https://github.com/WordPress/wordpress-playground/pull/2003))
+
+### Blueprints
+
+- SetSiteLanguage step – download the latest RC translations for Nightly and Beta builds of WordPress. ([#1987](https://github.com/WordPress/wordpress-playground/pull/1987))
+- Use the major WordPress version to download RC/beta translations. ([#2017](https://github.com/WordPress/wordpress-playground/pull/2017))
+
+### Tools
+
+
+#### Pull Request Previewer
+
+- Fix path of PR preview URL in production. ([#2014](https://github.com/WordPress/wordpress-playground/pull/2014))
+- Support submitting PR preview modal with ENTER key. ([#2015](https://github.com/WordPress/wordpress-playground/pull/2015))
+
+### Website
+
+- Move WordPress & Gutenberg PR Preview to Playground website. ([#1938](https://github.com/WordPress/wordpress-playground/pull/1938))
+- Restore basic element styles for modal dialog content. ([#2021](https://github.com/WordPress/wordpress-playground/pull/2021))
+
+### Bug Fixes
+
+- Fix test.md link. ([#2005](https://github.com/WordPress/wordpress-playground/pull/2005))
+
+### Various
+
+- [Data Liberation] WP_Stream_Importer with support for WXR and Markdown files. ([#1982](https://github.com/WordPress/wordpress-playground/pull/1982))
+
+### Contributors
+
+The following contributors merged PRs in this release:
+
+@adamziel @ajotka @bgrgicak @brandonpayton @StevenDufresne @zaerl
+
+
 ## [v1.0.12] (2024-11-18) 
 
 ### Website
