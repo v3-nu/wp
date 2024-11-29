@@ -163,7 +163,15 @@ class WP_WXR_Reader implements Iterator {
 	 * @since WP_VERSION
 	 * @var int
 	 */
-	private $entity_byte_offset;
+	private $last_xml_byte_offset_outside_of_entity;
+
+	/**
+	 * The XML processor cursor of the last entity opener.
+	 *
+	 * @since WP_VERSION
+	 * @var string|null
+	 */
+	private $last_xml_cursor_outside_of_entity;
 
 	/**
 	 * Whether the current entity has been emitted.
@@ -365,14 +373,13 @@ class WP_WXR_Reader implements Iterator {
 			$reader->connect_upstream( $upstream );
 			if ( null !== $cursor ) {
 				if ( ! isset( $cursor['upstream'] ) ) {
-					_doing_it_wrong(
-						__METHOD__,
-						'Invalid cursor provided for WP_WXR_Reader::create(). The upstream offset was missing.',
-						null
-					);
-					return false;
+					// No upstream cursor means we've processed the
+					// entire input stream.
+					$xml->input_finished();
+					$xml->next_token();
+				} else {
+					$upstream->seek( $cursor['upstream'] );
 				}
-				$upstream->seek( $cursor['upstream'] );
 			}
 		}
 		return $reader;
@@ -398,13 +405,12 @@ class WP_WXR_Reader implements Iterator {
 		 */
 		$xml_cursor                             = $this->xml->get_reentrancy_cursor();
 		$xml_cursor                             = json_decode( base64_decode( $xml_cursor ), true );
-		$xml_cursor['upstream_bytes_forgotten'] = $this->entity_byte_offset;
+		$xml_cursor['upstream_bytes_forgotten'] = $this->last_xml_byte_offset_outside_of_entity;
 		$xml_cursor                             = base64_encode( json_encode( $xml_cursor ) );
 		return json_encode(
 			array(
 				'xml' => $xml_cursor,
-				// WP_Byte_Reader cursors are always integer byte offsets in the stream.
-				'upstream' => $this->entity_byte_offset,
+				'upstream' => $this->last_xml_byte_offset_outside_of_entity,
 				'last_post_id' => $this->last_post_id,
 				'last_comment_id' => $this->last_comment_id,
 			)
@@ -534,7 +540,8 @@ class WP_WXR_Reader implements Iterator {
 			}
 			// If the read failed because of incomplete input data,
 			// try pulling more bytes from upstream before giving up.
-			if ( $this->is_paused_at_incomplete_input() &&
+			if (
+				$this->is_paused_at_incomplete_input() &&
 				$this->pull_upstream_bytes()
 			) {
 				continue;
@@ -611,6 +618,11 @@ class WP_WXR_Reader implements Iterator {
 				continue;
 			}
 
+			if ( count( $breadcrumbs ) <= 2 && $this->xml->is_tag_opener() ) {
+				$this->last_xml_byte_offset_outside_of_entity = $this->xml->get_token_byte_offset_in_the_input_stream();
+				$this->last_xml_cursor_outside_of_entity      = $this->xml->get_reentrancy_cursor();
+			}
+
 			$tag = $this->xml->get_tag();
 			/**
 			 * Custom adjustment: the Accessibility WXR file uses a non-standard
@@ -638,9 +650,8 @@ class WP_WXR_Reader implements Iterator {
 				// the previous entity is finished.
 				if ( $this->xml->is_tag_opener() ) {
 					$this->set_entity_tag( $tag );
-					if ( array_key_exists( $this->xml->get_tag(), static::KNOWN_ENITIES ) ) {
-						$this->entity_byte_offset = $this->xml->get_token_byte_offset_in_the_input_stream();
-					}
+					$this->last_xml_byte_offset_outside_of_entity = $this->xml->get_token_byte_offset_in_the_input_stream();
+					$this->last_xml_cursor_outside_of_entity      = $this->xml->get_reentrancy_cursor();
 				}
 				continue;
 			}
@@ -695,7 +706,7 @@ class WP_WXR_Reader implements Iterator {
 					array_key_exists( $this->xml->get_tag(), static::KNOWN_SITE_OPTIONS )
 				);
 				if ( $is_site_option_opener ) {
-					$this->entity_byte_offset = $this->xml->get_token_byte_offset_in_the_input_stream();
+					$this->last_xml_byte_offset_outside_of_entity = $this->xml->get_token_byte_offset_in_the_input_stream();
 				}
 				continue;
 			}
@@ -741,7 +752,9 @@ class WP_WXR_Reader implements Iterator {
 			 */
 			if (
 				$this->entity_type === 'post' &&
-				$tag === 'category'
+				$tag === 'category' &&
+				array_key_exists( 'domain', $this->last_opener_attributes ) &&
+				array_key_exists( 'nicename', $this->last_opener_attributes )
 			) {
 				$this->entity_data['terms'][] = array(
 					'taxonomy' => $this->last_opener_attributes['domain'],
@@ -887,7 +900,6 @@ class WP_WXR_Reader implements Iterator {
 		$this->entity_finished        = false;
 		$this->text_buffer            = '';
 		$this->last_opener_attributes = array();
-		$this->entity_byte_offset     = null;
 	}
 
 	public function current(): object {

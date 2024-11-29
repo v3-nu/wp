@@ -10,30 +10,45 @@ class WP_Attachment_Downloader {
 	private $output_paths = array();
 
 	private $current_event;
-	private $pending_events   = array();
-	private $downloads_so_far = 0;
-	private $enqueued_resource_id;
+	private $pending_events = array();
+	private $enqueued_url;
+	private $progress = array();
 
 	public function __construct( $output_root ) {
 		$this->client      = new Client();
 		$this->output_root = $output_root;
 	}
 
-	public function has_pending_requests() {
-		return count( $this->client->get_active_requests() ) > 0;
+	public function get_progress() {
+		return $this->progress;
 	}
 
-	public function enqueue_if_not_exists( $url, $output_path ) {
-		$this->enqueued_resource_id = null;
+	/**
+	 * Whether any downloads are still in progress.
+	 *
+	 * Note that zero active requests does not mean all work is done.
+	 * Even if all the response bytes are received, we still need to process
+	 * them and emit the final success/failure events.
+	 *
+	 * @return bool
+	 */
+	public function has_pending_requests() {
+		return count( $this->client->get_active_requests() ) > 0 || count( $this->pending_events ) > 0 || count( $this->progress ) > 0;
+	}
 
-		$output_path = ltrim( $output_path, '/' );
-		if ( file_exists( $output_path ) ) {
-			// @TODO: Reconsider the return value. The enqueuing operation failed,
-			//        but overall already having a file seems like a success.
+	public function enqueue_if_not_exists( $url, $output_relative_path ) {
+		$this->enqueued_url = $url;
+
+		$output_relative_path = $this->output_root . '/' . ltrim( $output_relative_path, '/' );
+		if ( file_exists( $output_relative_path ) ) {
+			$this->pending_events[] = new WP_Attachment_Downloader_Event(
+				$this->enqueued_url,
+				WP_Attachment_Downloader_Event::SUCCESS
+			);
 			return true;
 		}
 
-		$output_dir = dirname( $output_path );
+		$output_dir = dirname( $output_relative_path );
 		if ( ! file_exists( $output_dir ) ) {
 			// @TODO: think through the chmod of the created directory.
 			mkdir( $output_dir, 0777, true );
@@ -44,7 +59,6 @@ class WP_Attachment_Downloader {
 			return false;
 		}
 
-		++$this->downloads_so_far;
 		switch ( $protocol ) {
 			case 'file':
 				$local_path = parse_url( $url, PHP_URL_PATH );
@@ -55,26 +69,28 @@ class WP_Attachment_Downloader {
 				// Just copy the file over.
 				// @TODO: think through the chmod of the created file.
 
-				$this->enqueued_resource_id = 'file:' . $this->downloads_so_far;
-				$success                    = copy( $local_path, $output_path );
-				$this->pending_events[]     = new WP_Attachment_Downloader_Event(
-					$this->enqueued_resource_id,
+				$success                = copy( $local_path, $output_relative_path );
+				$this->pending_events[] = new WP_Attachment_Downloader_Event(
+					$this->enqueued_url,
 					$success ? WP_Attachment_Downloader_Event::SUCCESS : WP_Attachment_Downloader_Event::FAILURE
 				);
 				return true;
 			case 'http':
 			case 'https':
-				$request                            = new Request( $url );
-				$this->enqueued_resource_id         = 'http:' . $request->id;
-				$this->output_paths[ $request->id ] = $output_path;
+				$request                               = new Request( $url );
+				$this->output_paths[ $request->id ]    = $output_relative_path;
+				$this->progress[ $this->enqueued_url ] = array(
+					'received' => null,
+					'total' => null,
+				);
 				$this->client->enqueue( $request );
 				return true;
 		}
 		return false;
 	}
 
-	public function get_enqueued_resource_id() {
-		return $this->enqueued_resource_id;
+	public function get_enqueued_url() {
+		return $this->enqueued_url;
 	}
 
 	public function queue_full() {
@@ -99,71 +115,77 @@ class WP_Attachment_Downloader {
 		if ( ! $this->client->await_next_event() ) {
 			return false;
 		}
+		$event   = $this->client->get_event();
+		$request = $this->client->get_request();
+		// The request object we get from the client may be a redirect.
+		// Let's keep referring to the original request.
+		$original_url        = $request->original_request()->url;
+		$original_request_id = $request->original_request()->id;
 
-		do {
-			$event   = $this->client->get_event();
-			$request = $this->client->get_request();
-			// The request object we get from the client may be a redirect.
-			// Let's keep referring to the original request.
-			$original_request_id = $this->client->get_request()->original_request()->id;
-
-			switch ( $event ) {
-				case Client::EVENT_GOT_HEADERS:
-					if ( ! $request->is_redirected() ) {
-						if ( file_exists( $this->output_paths[ $original_request_id ] . '.partial' ) ) {
-							unlink( $this->output_paths[ $original_request_id ] . '.partial' );
-						}
-						$this->fps[ $original_request_id ] = fopen( $this->output_paths[ $original_request_id ] . '.partial', 'wb' );
-						if ( false === $this->fps[ $original_request_id ] ) {
-							// @TODO: Log an error.
+		switch ( $event ) {
+			case Client::EVENT_GOT_HEADERS:
+				if ( ! $request->is_redirected() ) {
+					if ( file_exists( $this->output_paths[ $original_request_id ] . '.partial' ) ) {
+						unlink( $this->output_paths[ $original_request_id ] . '.partial' );
+					}
+					$fp = fopen( $this->output_paths[ $original_request_id ] . '.partial', 'wb' );
+					if ( false !== $fp ) {
+						$this->fps[ $original_request_id ]           = $fp;
+						$this->progress[ $original_url ]['received'] = 0;
+						if ( $request->response->get_header( 'Content-Length' ) ) {
+							$this->progress[ $original_url ]['total'] = $request->response->get_header( 'Content-Length' );
 						}
 					}
-					break;
-				case Client::EVENT_BODY_CHUNK_AVAILABLE:
-					$chunk = $this->client->get_response_body_chunk();
-					if ( false === fwrite( $this->fps[ $original_request_id ], $chunk ) ) {
-						// @TODO: Log an error.
+				}
+				break;
+			case Client::EVENT_BODY_CHUNK_AVAILABLE:
+				$chunk = $this->client->get_response_body_chunk();
+				if ( false === fwrite( $this->fps[ $original_request_id ], $chunk ) ) {
+					// @TODO: Don't echo the error message. Attach it to the import session instead for the user to review later on.
+					_doing_it_wrong( __METHOD__, sprintf( 'Failed to write to file: %s', $this->output_paths[ $original_request_id ] ), '1.0' );
+				}
+				$this->progress[ $original_url ]['received'] += strlen( $chunk );
+				break;
+			case Client::EVENT_FAILED:
+				if ( isset( $this->fps[ $original_request_id ] ) ) {
+					fclose( $this->fps[ $original_request_id ] );
+				}
+				if ( isset( $this->output_paths[ $original_request_id ] ) ) {
+					$partial_file = $this->output_paths[ $original_request_id ] . '.partial';
+					if ( file_exists( $partial_file ) ) {
+						unlink( $partial_file );
 					}
-					break;
-				case Client::EVENT_FAILED:
+				}
+				$this->pending_events[] = new WP_Attachment_Downloader_Event(
+					$original_url,
+					WP_Attachment_Downloader_Event::FAILURE
+				);
+				unset( $this->progress[ $original_url ] );
+				unset( $this->output_paths[ $original_request_id ] );
+				break;
+			case Client::EVENT_FINISHED:
+				if ( ! $request->is_redirected() ) {
+					// Only clean up if this was the last request in the chain.
 					if ( isset( $this->fps[ $original_request_id ] ) ) {
 						fclose( $this->fps[ $original_request_id ] );
 					}
 					if ( isset( $this->output_paths[ $original_request_id ] ) ) {
-						$partial_file = $this->output_paths[ $original_request_id ] . '.partial';
-						if ( file_exists( $partial_file ) ) {
-							unlink( $partial_file );
+						if ( false === rename(
+							$this->output_paths[ $original_request_id ] . '.partial',
+							$this->output_paths[ $original_request_id ]
+						) ) {
+							// @TODO: Log an error.
 						}
 					}
 					$this->pending_events[] = new WP_Attachment_Downloader_Event(
-						'http:' . $original_request_id,
-						WP_Attachment_Downloader_Event::FAILURE
+						$original_url,
+						WP_Attachment_Downloader_Event::SUCCESS
 					);
+					unset( $this->progress[ $original_url ] );
 					unset( $this->output_paths[ $original_request_id ] );
-					break;
-				case Client::EVENT_FINISHED:
-					if ( ! $request->is_redirected() ) {
-						// Only clean up if this was the last request in the chain.
-						if ( isset( $this->fps[ $original_request_id ] ) ) {
-							fclose( $this->fps[ $original_request_id ] );
-						}
-						if ( isset( $this->output_paths[ $original_request_id ] ) ) {
-							if ( false === rename(
-								$this->output_paths[ $original_request_id ] . '.partial',
-								$this->output_paths[ $original_request_id ]
-							) ) {
-								// @TODO: Log an error.
-							}
-						}
-						$this->pending_events[] = new WP_Attachment_Downloader_Event(
-							'http:' . $original_request_id,
-							WP_Attachment_Downloader_Event::SUCCESS
-						);
-						unset( $this->output_paths[ $original_request_id ] );
-					}
-					break;
-			}
-		} while ( $this->client->await_next_event() );
+				}
+				break;
+		}
 
 		return true;
 	}
