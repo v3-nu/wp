@@ -1,4 +1,4 @@
-import { createMemoizedFetch } from './create-memoized-fetch';
+import { createMemoizedFetch } from '../create-memoized-fetch';
 
 describe('createMemoizedFetch', () => {
 	it('should return a function', () => {
