@@ -29,8 +29,16 @@ jobs:
         steps:
             - uses: actions/checkout@v4
               with:
-                  sparse-checkout: packages/playground/php-cors-proxy
+                  sparse-checkout: |
+                      packages/playground/php-cors-proxy
                       packages/playground/php-cors-proxy-deployment
+                  sparse-checkout-cone-mode: false
+
+            - name: Observe working directory contents
+              shell: bash
+              run: |
+                  pwd
+                  ls -laR
 
             - name: Deploy to CORS proxy server
               shell: bash
@@ -43,8 +51,8 @@ jobs:
 
                   # CORS proxy files
                   rsync --verbose --archive --compress -e "ssh -i ~/.ssh/id_ed25519" \
-                    --include '*/' --include '*.php' --exclude '*' \
-                    --delete --prune-empty-dirs \
+                    --exclude 'tests/' --include '*/' --include '*.php' --exclude '*' \
+                    --delete --delete-excluded --prune-empty-dirs \
                     packages/playground/php-cors-proxy/ \
                     ${{ secrets.DEPLOY_CORS_PROXY_TARGET_USER }}@${{ secrets.DEPLOY_WEBSITE_TARGET_HOST }}:'~/updated-proxy-files'
 
