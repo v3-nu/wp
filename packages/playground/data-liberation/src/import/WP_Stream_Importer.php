@@ -14,8 +14,10 @@ use WordPress\AsyncHTTP\Request;
  *
  * @TODO:
  * ✅ Re-entrant import
- * * Log errors for the user to decide what to do.
- * * Log progress information.
+ * * Log progress and errors for the user to decide what to do.
+ *   * Indexing
+ *   * ✅ Frontloading
+ *   * Entity import
  * * Error out if `source_site_url` is not set by the time we're processing
  *   the first encountered URL.
  * * Disable anything remotely related to KSES during the import. KSES
@@ -133,7 +135,11 @@ class WP_Stream_Importer {
 			return false;
 		}
 		$this->stage            = $cursor['stage'];
+		$this->next_stage       = $cursor['next_stage'];
 		$this->resume_at_entity = $cursor['resume_at_entity'];
+		if ( ! empty( $cursor['source_site_url'] ) ) {
+			$this->source_site_url = $cursor['source_site_url'];
+		}
 		return true;
 	}
 
@@ -141,7 +147,13 @@ class WP_Stream_Importer {
 		return json_encode(
 			array(
 				'stage' => $this->stage,
+				/**
+				 * Store `next_stage` to distinguish between the start and the end of the entity
+				 * stream. `resume_at_entity` may be null in both cases.
+				 */
+				'next_stage' => $this->next_stage,
 				'resume_at_entity' => $this->resume_at_entity,
+				'source_site_url' => $this->source_site_url,
 			)
 		);
 	}
@@ -172,9 +184,14 @@ class WP_Stream_Importer {
 	) {
 		$this->entity_iterator_factory = $entity_iterator_factory;
 		$this->options                 = $options;
-		if ( isset( $options['source_site_url'] ) ) {
-			$this->source_site_url = $options['source_site_url'];
+		if ( isset( $options['default_source_site_url'] ) ) {
+			$this->source_site_url = $options['default_source_site_url'];
 		}
+	}
+
+	private $frontloading_retries_iterator;
+	public function set_frontloading_retries_iterator( $frontloading_retries_iterator ) {
+		$this->frontloading_retries_iterator = $frontloading_retries_iterator;
 	}
 
 	/**
@@ -186,9 +203,6 @@ class WP_Stream_Importer {
 	private $importer;
 
 	public function next_step() {
-		if ( null !== $this->next_stage ) {
-			return false;
-		}
 		switch ( $this->stage ) {
 			case self::STAGE_INITIAL:
 				$this->next_stage = self::STAGE_INDEX_ENTITIES;
@@ -241,6 +255,10 @@ class WP_Stream_Importer {
 	private $indexed_assets_urls     = array();
 
 	private function index_next_entities( $count = 10000 ) {
+		if ( null !== $this->next_stage ) {
+			return false;
+		}
+
 		if ( null === $this->entity_iterator ) {
 			$this->entity_iterator = $this->create_entity_iterator();
 		}
@@ -290,22 +308,29 @@ class WP_Stream_Importer {
 			 * every single post in memory for sure, otherwise WordPress would not
 			 * be able to render it, but can we hold all the URLs from 10k posts at once?
 			 */
-			if ( 'post' === $type ) {
-				$data = $entity->get_data();
-				if ( isset( $data['post_type'] ) && $data['post_type'] === 'attachment' ) {
-					// @TODO: Consider using sha1 hashes to prevent huge URLs from blowing up the memory.
-					$this->indexed_assets_urls[ $data['attachment_url'] ] = true;
-				} elseif ( isset( $data['post_content'] ) ) {
-					$post = $data;
-					$p    = new WP_Block_Markup_Url_Processor( $post['post_content'], $this->source_site_url );
-					while ( $p->next_url() ) {
-						if ( ! $this->url_processor_matched_asset_url( $p ) ) {
-							continue;
-						}
-						// @TODO: Consider using sha1 hashes to prevent huge URLs from blowing up the memory.
-						$this->indexed_assets_urls[ $p->get_raw_url() ] = true;
+			$data = $entity->get_data();
+			switch ( $type ) {
+				case 'site_option':
+					if ( $data['option_name'] === 'home' ) {
+						$this->source_site_url = $data['option_value'];
 					}
-				}
+					break;
+				case 'post':
+					if ( isset( $data['post_type'] ) && $data['post_type'] === 'attachment' ) {
+						// @TODO: Consider using sha1 hashes to prevent huge URLs from blowing up the memory.
+						$this->indexed_assets_urls[ $data['attachment_url'] ] = true;
+					} elseif ( isset( $data['post_content'] ) ) {
+						$post = $data;
+						$p    = new WP_Block_Markup_Url_Processor( $post['post_content'], $this->source_site_url );
+						while ( $p->next_url() ) {
+							if ( ! $this->url_processor_matched_asset_url( $p ) ) {
+								continue;
+							}
+							// @TODO: Consider using sha1 hashes to prevent huge URLs from blowing up the memory.
+							$this->indexed_assets_urls[ $p->get_raw_url() ] = true;
+						}
+					}
+					break;
 			}
 
 			$this->entity_iterator->next();
@@ -347,8 +372,9 @@ class WP_Stream_Importer {
 		while ( $this->downloader->next_event() ) {
 			$event = $this->downloader->get_event();
 			switch ( $event->type ) {
-				case WP_Attachment_Downloader_Event::SUCCESS:
 				case WP_Attachment_Downloader_Event::FAILURE:
+				case WP_Attachment_Downloader_Event::SUCCESS:
+				case WP_Attachment_Downloader_Event::ALREADY_EXISTS:
 					$this->frontloading_events[] = $event;
 					foreach ( array_keys( $this->active_downloads ) as $entity_cursor ) {
 						unset( $this->active_downloads[ $entity_cursor ][ $event->resource_id ] );
@@ -378,8 +404,14 @@ class WP_Stream_Importer {
 	 */
 	private function frontload_next_entity() {
 		if ( null === $this->entity_iterator ) {
-			$this->entity_iterator = $this->create_entity_iterator();
-			$this->downloader      = new WP_Attachment_Downloader( $this->options['uploads_path'] );
+			$this->entity_iterator = new WP_Entity_Iterator_Chain();
+			if ( null !== $this->frontloading_retries_iterator ) {
+				$this->entity_iterator->set_assets_attempts_iterator( $this->frontloading_retries_iterator );
+			}
+			if ( null === $this->next_stage ) {
+				$this->entity_iterator->set_entities_iterator( $this->create_entity_iterator() );
+			}
+			$this->downloader = new WP_Attachment_Downloader( $this->options['uploads_path'] );
 		}
 
 		// Clear the frontloading events from the previous pass.
@@ -403,6 +435,7 @@ class WP_Stream_Importer {
 			 * * For large files, every time a full megabyte is downloaded above 10MB.
 			 */
 			if ( true === $this->downloader->poll() ) {
+				$this->frontloading_advance_reentrancy_cursor();
 				return true;
 			}
 		}
@@ -411,7 +444,7 @@ class WP_Stream_Importer {
 		if ( ! $this->entity_iterator->valid() && ! $this->downloader->has_pending_requests() ) {
 			// This is an assertion to make double sure we're emptying the state queue.
 			if ( ! empty( $this->active_downloads ) ) {
-				_doing_it_wrong( __METHOD__, 'Frontloading queue is not empty.', '1.0' );
+				_doing_it_wrong( __METHOD__, '$active_downloads queue was not empty at the end of the frontloading stage.', '1.0' );
 			}
 			$this->downloader          = null;
 			$this->active_downloads    = array();
@@ -431,14 +464,17 @@ class WP_Stream_Importer {
 
 		$data = $entity->get_data();
 		switch ( $entity->get_type() ) {
-			case 'site_option':
-				if ( $data['option_name'] === 'home' ) {
-					$this->source_site_url = $data['option_value'];
-				}
+			case 'asset_retry':
+				$this->enqueue_attachment_download(
+					$data['current_url'],
+					array(
+						'original_url' => $data['original_url'],
+					)
+				);
 				break;
 			case 'post':
 				if ( isset( $data['post_type'] ) && $data['post_type'] === 'attachment' ) {
-					$this->enqueue_attachment_download( $data['attachment_url'], null );
+					$this->enqueue_attachment_download( $data['attachment_url'] );
 				} elseif ( isset( $data['post_content'] ) ) {
 					$post = $data;
 					$p    = new WP_Block_Markup_Url_Processor( $post['post_content'], $this->source_site_url );
@@ -448,17 +484,14 @@ class WP_Stream_Importer {
 						}
 						$this->enqueue_attachment_download(
 							$p->get_raw_url(),
-							$post['source_path'] ?? $post['slug'] ?? null
+							array(
+								'context_path' => $post['source_path'] ?? $post['slug'] ?? null,
+							)
 						);
 					}
 				}
 				break;
 		}
-
-		/**
-		 * @TODO: Update the progress information.
-		 * @TODO: Save the freshly requested URLs to the cursor.
-		 */
 
 		// Move on to the next entity.
 		$this->entity_iterator->next();
@@ -475,6 +508,10 @@ class WP_Stream_Importer {
 	 *        the API consumer?
 	 */
 	private function import_next_entity() {
+		if ( null !== $this->next_stage ) {
+			return false;
+		}
+
 		$this->imported_entities_counts = array();
 
 		if ( null === $this->entity_iterator ) {
@@ -567,9 +604,11 @@ class WP_Stream_Importer {
 		return $this->imported_entities_counts;
 	}
 
-	private function enqueue_attachment_download( string $raw_url, $context_path = null ) {
+	private function enqueue_attachment_download( string $raw_url, $options = array() ) {
+		$context_path    = $options['context_path'] ?? null;
+		$original_url    = $options['original_url'] ?? $raw_url;
 		$url             = $this->rewrite_attachment_url( $raw_url, $context_path );
-		$asset_filename  = $this->new_asset_filename( $raw_url );
+		$asset_filename  = $this->new_asset_filename( $original_url );
 		$output_filename = ltrim( $asset_filename, '/' );
 
 		$enqueued = $this->downloader->enqueue_if_not_exists( $url, $output_filename );

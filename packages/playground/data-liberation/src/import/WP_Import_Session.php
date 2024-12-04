@@ -8,11 +8,12 @@
  */
 class WP_Import_Session {
 	const POST_TYPE = 'import_session';
+
 	/**
 	 * @TODO: Make it extendable
 	 * @TODO: Reuse the same entities list as WP_Stream_Importer
 	 */
-	const PROGRESS_ENTITIES = array(
+	const PROGRESS_ENTITIES                  = array(
 		'site_option',
 		'user',
 		'category',
@@ -22,8 +23,11 @@ class WP_Import_Session {
 		'post_meta',
 		'comment',
 		'comment_meta',
-		'file',
 	);
+	const FRONTLOAD_STATUS_AWAITING_DOWNLOAD = 'awaiting_download';
+	const FRONTLOAD_STATUS_IGNORED           = 'ignored';
+	const FRONTLOAD_STATUS_ERROR             = 'error';
+	const FRONTLOAD_STATUS_SUCCEEDED         = 'succeeded';
 	private $post_id;
 	private $cached_stage;
 
@@ -175,6 +179,7 @@ class WP_Import_Session {
 	public function get_metadata() {
 		$cursor = $this->get_reentrancy_cursor();
 		return array(
+			'post_id' => $this->post_id,
 			'cursor' => $cursor ? $cursor : null,
 			'data_source' => get_post_meta( $this->post_id, 'data_source', true ),
 			'source_url' => get_post_meta( $this->post_id, 'source_url', true ),
@@ -214,7 +219,11 @@ class WP_Import_Session {
 	public function count_imported_entities() {
 		$progress = array();
 		foreach ( self::PROGRESS_ENTITIES as $entity ) {
-			$progress[ $entity ] = (int) get_post_meta( $this->post_id, 'imported_' . $entity, true );
+			$progress[] = array(
+				'label' => $entity,
+				'imported' => (int) get_post_meta( $this->post_id, 'imported_' . $entity, true ),
+				'total' => (int) get_post_meta( $this->post_id, 'total_' . $entity, true ),
+			);
 		}
 		return $progress;
 	}
@@ -267,13 +276,154 @@ class WP_Import_Session {
 		}
 	}
 
+	public function count_unfinished_frontloading_placeholders() {
+		global $wpdb;
+		return (int) $wpdb->get_var(
+			$wpdb->prepare(
+				"SELECT COUNT(*) FROM $wpdb->posts 
+				 WHERE post_type = 'frontloading_placeholder' 
+				 AND post_parent = %d
+				 AND post_status != %s
+				 AND post_status != %s",
+				$this->post_id,
+				self::FRONTLOAD_STATUS_SUCCEEDED,
+				self::FRONTLOAD_STATUS_IGNORED
+			)
+		);
+	}
+
+	public function get_frontloading_placeholders( $options = array() ) {
+		$query = new WP_Query(
+			array(
+				'post_type' => 'frontloading_placeholder',
+				'post_status' => 'any',
+				'post_parent' => $this->post_id,
+				'posts_per_page' => $options['per_page'] ?? 25,
+				'paged' => $options['page'] ?? 1,
+				'orderby' => array(
+					'post_status' => array(
+						self::FRONTLOAD_STATUS_ERROR => 0,
+						self::FRONTLOAD_STATUS_AWAITING_DOWNLOAD => 1,
+						'any' => 2,
+					),
+					'ID' => 'ASC',
+				),
+			)
+		);
+
+		if ( ! $query->have_posts() ) {
+			return array();
+		}
+
+		$posts = $query->posts;
+		$ids   = array_map(
+			function ( $post ) {
+				return $post->ID;
+			},
+			$posts
+		);
+		update_meta_cache( 'post', $ids );
+		foreach ( $posts as $post ) {
+			$post->meta = get_all_post_meta_flat( $post->ID );
+		}
+
+		return $posts;
+	}
+
 	public function get_total_number_of_entities() {
 		$totals = array();
 		foreach ( static::PROGRESS_ENTITIES as $field ) {
 			$totals[ $field ] = (int) get_post_meta( $this->post_id, 'total_' . $field, true );
 		}
+		$totals['download'] = $this->get_total_number_of_assets();
 		return $totals;
 	}
+
+	public function get_total_number_of_assets() {
+		global $wpdb;
+		return (int) $wpdb->get_var(
+			$wpdb->prepare(
+				"SELECT COUNT(*) FROM $wpdb->posts 
+			WHERE post_type = 'frontloading_placeholder' 
+			AND post_parent = %d",
+				$this->post_id
+			)
+		);
+	}
+
+	public function get_frontloading_placeholder( $url ) {
+		global $wpdb;
+		$id = $wpdb->get_var(
+			$wpdb->prepare(
+				"SELECT p.ID FROM $wpdb->posts p
+				 INNER JOIN $wpdb->postmeta pm ON p.ID = pm.post_id
+				 WHERE p.post_type = 'frontloading_placeholder'
+				 AND p.post_parent = %d
+				 AND pm.meta_key = 'current_url'
+				 AND pm.meta_value = %s
+				 LIMIT 1",
+				$this->post_id,
+				$url
+			)
+		);
+		return get_post( $id );
+	}
+
+	/**
+	 * Creates placeholder attachments for the assets to be downloaded in the
+	 * frontloading stage.
+	 */
+	public function create_frontloading_placeholders( $urls ) {
+		global $wpdb;
+
+		foreach ( $urls as $url => $_ ) {
+			/**
+			 * Check if placeholder with this URL already exists
+			 * There's a race condition here – another insert may happen
+			 * between the check and the insert.
+			 * @TODO: Explore solutions. A custom table with a UNIQUE constraint
+			 * may or may not be an option, depending on the performance impact
+			 * on 100GB+ VIP databases.
+			 */
+			$exists = $wpdb->get_var(
+				$wpdb->prepare(
+					"SELECT ID FROM $wpdb->posts 
+				WHERE post_type = 'frontloading_placeholder' 
+				AND post_parent = %d
+				AND guid = %s
+				LIMIT 1",
+					$this->post_id,
+					$url
+				)
+			);
+
+			if ( $exists ) {
+				continue;
+			}
+
+			$post_data        = array(
+				'post_type' => 'frontloading_placeholder',
+				'post_parent' => $this->post_id,
+				'post_title' => basename( $url ),
+				'post_status' => self::FRONTLOAD_STATUS_AWAITING_DOWNLOAD,
+				'guid' => $url,
+				'meta_input' => array(
+					'original_url' => $url,
+					'current_url' => $url,
+					'attempts' => 0,
+					'last_error' => null,
+					'target_path' => '',
+				),
+			);
+			$insertion_result = wp_insert_post( $post_data );
+			if ( is_wp_error( $insertion_result ) ) {
+				// @TODO: How to handle an insertion failure?
+				throw new Exception( 'Failed to insert frontloading placeholder' );
+				return false;
+			}
+		}
+	}
+
 	/**
 	 * Sets the total number of entities to import for each type.
 	 *
@@ -314,26 +464,54 @@ class WP_Import_Session {
 	public function bump_frontloading_progress( $frontloading_progress, $events = array() ) {
 		update_post_meta( $this->post_id, 'frontloading_progress', $frontloading_progress );
 
-		$successes = 0;
 		foreach ( $events as $event ) {
-			if ( $event->type === WP_Attachment_Downloader_Event::SUCCESS ) {
-				++$successes;
-			} else {
-				// @TODO: Store error.
+			$url         = $event->resource_id;
+			$placeholder = $this->get_frontloading_placeholder( $url );
+			if ( ! $placeholder ) {
+				_doing_it_wrong(
+					__METHOD__,
+					'Frontloading placeholder post not found for URL: ' . $url,
+					'1.0.0'
+				);
+				continue;
 			}
-		}
-		if ( $successes > 0 ) {
-			// @TODO: Consider not treating files as a special case.
-			$this->bump_imported_entities_counts(
-				array(
-					'file' => $successes,
-				)
-			);
+
+			update_post_meta( $placeholder->ID, 'last_error', $event->error );
+
+			$attempts     = get_post_meta( $placeholder->ID, 'attempts', true );
+			$new_attempts = $attempts;
+			switch ( $event->type ) {
+				case WP_Attachment_Downloader_Event::SUCCESS:
+					$new_status   = self::FRONTLOAD_STATUS_SUCCEEDED;
+					$new_attempts = $attempts + 1;
+					break;
+				case WP_Attachment_Downloader_Event::ALREADY_EXISTS:
+					$new_status = self::FRONTLOAD_STATUS_SUCCEEDED;
+					break;
+				case WP_Attachment_Downloader_Event::FAILURE:
+					$new_status   = self::FRONTLOAD_STATUS_ERROR;
+					$new_attempts = $attempts + 1;
+					break;
+			}
+
+			if ( $new_attempts !== $attempts ) {
+				update_post_meta( $placeholder->ID, 'attempts', $new_attempts );
+			}
+
+			if ( $new_status !== $placeholder->post_status ) {
+				wp_update_post(
+					array(
+						'ID' => $placeholder->ID,
+						'post_status' => $new_status,
+					)
+				);
+			}
 		}
 	}
 
 	public function get_frontloading_progress() {
-		return get_post_meta( $this->post_id, 'frontloading_progress', true ) ?? array();
+		$meta = get_post_meta( $this->post_id, 'frontloading_progress', true );
+		return $meta ? $meta : array();
 	}
 
 	public function is_stage_completed( $stage ) {
