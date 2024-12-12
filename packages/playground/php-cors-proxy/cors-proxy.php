@@ -101,14 +101,27 @@ curl_setopt($ch, CURLOPT_RESOLVE, [
     "$host:443:$resolvedIp"
 ]);
 
-// Pass all incoming headers except cookies and authorization
-$curlHeaders = filter_headers_strings(
-    kv_headers_to_curl_format(getallheaders()),
-    [
-        'Cookie',
-        'Authorization',
-        'Host',
-    ]
+$strictly_disallowed_headers = [
+    // Cookies represent a relationship between the proxy server
+    // and the client, so it is inappropriate to forward them.
+    'Cookie',
+    // Drop the incoming Host header because it identifies the
+    // proxy server, not the target server.
+    'Host'
+];
+$headers_requiring_opt_in = [
+    // Allow Authorization header to be forwarded only if the client
+    // explicitly opts in to avoid undesirable situations such as:
+    // - a browser auto-sending basic auth with every proxy request
+    // - the proxy forwarding the basic auth values to all target servers
+    'Authorization'
+];
+$curlHeaders = kv_headers_to_curl_format(
+    filter_headers_by_name(
+        getallheaders(),
+        $strictly_disallowed_headers,
+        $headers_requiring_opt_in,
+    )
 );
 curl_setopt(
     $ch,
@@ -173,6 +186,11 @@ curl_setopt(
             stripos($header, 'HTTP/') !== 0 &&
             stripos($header, 'Set-Cookie:') !== 0 &&
             stripos($header, 'Authorization:') !== 0 &&
+            // The proxy server does not support relaying auth challenges.
+            // Specifically, we want to avoid browsers prompting for basic auth
+            // credentials which they will send to the proxy server for the
+            // remainder of the session.
+            stripos($header, 'WWW-Authenticate:') !== 0 &&
             stripos($header, 'Cache-Control:') !== 0 &&
             // The browser won't accept multiple values for these headers.
             stripos($header, 'Access-Control-Allow-Origin:') !== 0 &&
