@@ -21,8 +21,7 @@ use League\CommonMark\Extension\Table\TableCell;
 use League\CommonMark\Extension\Table\TableRow;
 use League\CommonMark\Extension\Table\TableSection;
 
-
-class WP_Markdown_To_Blocks {
+class WP_Markdown_To_Blocks implements WP_Block_Markup_Converter {
 	const STATE_READY    = 'STATE_READY';
 	const STATE_COMPLETE = 'STATE_COMPLETE';
 
@@ -40,17 +39,24 @@ class WP_Markdown_To_Blocks {
 		$this->markdown = $markdown;
 	}
 
-	public function parse() {
+	public function convert() {
 		if ( self::STATE_READY !== $this->state ) {
 			return false;
 		}
 		$this->convert_markdown_to_blocks();
-		$this->block_markup = self::convert_blocks_to_markup( $this->parsed_blocks );
+		$this->block_markup = WP_Import_Utils::convert_blocks_to_markup( $this->parsed_blocks );
 		return true;
 	}
 
-	public function get_frontmatter() {
+	public function get_all_metadata() {
 		return $this->frontmatter;
+	}
+
+	public function get_meta_value( $key ) {
+		if ( ! array_key_exists( $key, $this->frontmatter ) ) {
+			return null;
+		}
+		return $this->frontmatter[ $key ][0];
 	}
 
 	public function get_block_markup() {
@@ -74,7 +80,11 @@ class WP_Markdown_To_Blocks {
 		$parser = new MarkdownParser( $environment );
 
 		$document          = $parser->parse( $this->markdown );
-		$this->frontmatter = $document->data;
+		$this->frontmatter = [];
+		foreach( $document->data as $key => $value ) {
+			// Use an array as a value to comply with the WP_Block_Markup_Converter interface.
+			$this->frontmatter[ $key ] = [$value];
+		}
 
 		$walker = $document->walker();
 		while ( true ) {
@@ -163,7 +173,7 @@ class WP_Markdown_To_Blocks {
 								'content' => '<pre class="wp-block-code"><code>' . trim( str_replace( "\n", '<br>', htmlspecialchars( $node->getLiteral() ) ) ) . '</code></pre>',
 							)
 						);
-						if ( $node->getInfo() ) {
+						if ( method_exists( $node, 'getInfo' ) && $node->getInfo() ) {
 							$this->current_block->attrs['language'] = preg_replace( '/[ \t\r\n\f].*/', '', $node->getInfo() );
 						}
 						break;
@@ -337,35 +347,6 @@ class WP_Markdown_To_Blocks {
 			}
 		}
 		$this->parsed_blocks = $this->root_block->inner_blocks;
-	}
-
-	private static function convert_blocks_to_markup( $blocks ) {
-		$block_markup = '';
-
-		foreach ( $blocks as $block ) {
-			// Start of block comment
-			$comment = '<!-- -->';
-			$p       = new WP_HTML_Tag_Processor( $comment );
-			$p->next_token();
-			$attrs   = $block->attrs;
-			$content = $block->attrs['content'] ?? '';
-			unset( $attrs['content'] );
-			$encoded_attrs = json_encode( $attrs );
-			if ( $encoded_attrs === '[]' ) {
-				$encoded_attrs = '';
-			}
-			$p->set_modifiable_text( " wp:{$block->block_name} " . $encoded_attrs . ' ' );
-			$open_comment = $p->get_updated_html();
-
-			$block_markup .= $open_comment . "\n";
-			$block_markup .= $content . "\n";
-			$block_markup .= self::convert_blocks_to_markup( $block->inner_blocks );
-
-			// End of block comment
-			$block_markup .= "<!-- /wp:{$block->block_name} -->\n";
-		}
-
-		return $block_markup;
 	}
 
 	private function append_content( $content ) {
