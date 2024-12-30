@@ -3,6 +3,8 @@ name: Deploy to playground.wordpress.net
 on:
     workflow_dispatch:
 
+permissions:
+  contents: write
 
 concurrency:
     group: website-deployment
