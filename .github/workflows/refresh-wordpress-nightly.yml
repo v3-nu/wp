@@ -3,8 +3,6 @@ name: 'Refresh WordPress Nightly'
 on:
     workflow_dispatch:
     # Deploy the nightly version of WordPress every day at 8am UTC
-    schedule:
-        - cron: '0 8 * * *'
 
 jobs:
     build_and_deploy:
