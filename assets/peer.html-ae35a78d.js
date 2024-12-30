@@ -1,0 +1,2 @@
+import"./modulepreload-polyfill-3cfb730f.js";import{_ as t}from"./preload-helper-cf010ec4.js";const{runDemo:o}=await t(()=>import("./peer-3fa238d9.js"),["assets/peer-3fa238d9.js","assets/index-091168b2.js","assets/setup-playground-sync-08c3f510.js","assets/config-c632e6c9.js"]),e=new URLSearchParams(document.location.search);o(document.getElementById("wp"),e.get("client-id")||"solo",parseInt(e.get("autoincrement-offset"))||1e6);
+//# sourceMappingURL=peer.html-ae35a78d.js.map

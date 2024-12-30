@@ -1,0 +1,2 @@
+import{s as e,m as n}from"./index-091168b2.js";import{s as i,P as l,l as m}from"./setup-playground-sync-08c3f510.js";import{g}from"./config-c632e6c9.js";async function u(r,o,t){const a=await e({iframe:r,remoteUrl:g().toString()}),s=await a.absoluteUrl;console.log({clientId:o,siteURL:s}),await i(a,{autoincrementOffset:t,transport:new l,middlewares:[m(o)]}),await n(a,{username:"admin",password:"password"}),await a.goTo("/")}export{u as runDemo};
+//# sourceMappingURL=peer-3fa238d9.js.map

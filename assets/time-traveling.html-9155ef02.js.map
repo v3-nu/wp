@@ -1,0 +1,1 @@
+{"version":3,"mappings":"8FACE,KAAM,CAAE,YAAAA,CAAW,EAAK,YAAM,OAAO,8BAAsB,uKAC3DA,EAAa","names":["restartDemo"],"sources":["../../../../../packages/playground/website/demos/time-traveling.html?html-proxy&index=1.js"],"sourcesContent":["\n\t\tconst { restartDemo } = await import('./time-traveling.tsx');\n\t\trestartDemo();\n\t"],"file":"assets/time-traveling.html-9155ef02.js"}

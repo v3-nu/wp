@@ -1,0 +1,2 @@
+import"./modulepreload-polyfill-3cfb730f.js";import{_ as o}from"./preload-helper-cf010ec4.js";shouldLazyLoadPlayground||o(()=>import("./main-f2bb24e3.js"),["assets/main-f2bb24e3.js","assets/client-0f0cb7ce.js","assets/index-091168b2.js","assets/config-c632e6c9.js","assets/_virtual_cors-proxy-url-565333ec.js","assets/modulepreload-polyfill-3cfb730f.js","assets/preload-helper-cf010ec4.js","assets/main-e01e0d7f.css"]);
+//# sourceMappingURL=index-ab139d19.js.map
